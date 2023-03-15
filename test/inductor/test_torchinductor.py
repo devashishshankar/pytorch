@@ -34,6 +34,7 @@ from torch.nn import functional as F
 from torch.testing import make_tensor
 from torch.testing._internal.common_dtype import all_types
 from torch.testing._internal.common_utils import (
+    DeterministicGuard,
     IS_CI,
     IS_MACOS,
     IS_WINDOWS,
@@ -4524,6 +4525,22 @@ class CommonTemplate:
             ),
         )
 
+    def test_index_put_deterministic_fallback(self):
+        with DeterministicGuard(True):
+
+            def fn(a, b, c):
+                return torch.index_put(a, [b], c, True)
+
+            self.common(
+                fn,
+                [
+                    torch.randn([100, 32]),
+                    torch.randint(0, 100, size=[600], dtype=torch.int64),
+                    torch.randn([600, 32]),
+                ],
+                check_lowp=False,
+            )
+
     def test_index_put_index(self):
         def fn(ind, x, src):
             y = torch.ops.aten.index_put.default(x, [ind], src)
@@ -4772,6 +4789,43 @@ class CommonTemplate:
                 torch.randn(2, 3),
             ],
         )
+
+    def test_scatter_deterministic_fallback(self):
+        with DeterministicGuard(True):
+
+            def fn(x, ind, src):
+                return torch.scatter(x, 0, ind, src)
+
+            self.common(
+                fn,
+                (
+                    torch.randn(196, 992),
+                    torch.randint(196, (1, 992)),
+                    torch.randn(1, 992),
+                ),
+            )
+
+    def test_scatter_reduce_deterministic_fallback(self):
+        context = (
+            self.assertRaisesRegex(RuntimeError, "deterministic")
+            if "cuda" in self.device
+            else contextlib.nullcontext()
+        )
+        with context:
+            with DeterministicGuard(True):
+
+                def fn(a, dim, index, b):
+                    return aten.scatter_reduce(a, dim, index, b, "sum")
+
+                self.common(
+                    fn,
+                    [
+                        torch.randn(5, 29, 13),
+                        2,
+                        torch.tensor([[[3, 5, 7, 9]]]),
+                        torch.randn(1, 1, 10),
+                    ],
+                )
 
     # issue #1150
     def test_dense_mask_index(self):
