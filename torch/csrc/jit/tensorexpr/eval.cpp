@@ -1277,15 +1277,39 @@ void SimpleIREvaluator::bindArg(const BufferArg& bufArg, void* data) {
     return;
   }
 
+  TORCH_CHECK(bufArg.dtype().scalar_type() != c10::ScalarType::Double);
+  TORCH_CHECK(bufArg.dtype().scalar_type() != c10::ScalarType::Long);
+
   switch (bufArg.dtype().scalar_type()) {
-#define TYPE_CASE(Type, Name)                 \
-  case ScalarType::Name: {                    \
-    Type typed_data;                          \
-    memcpy(&typed_data, data, sizeof(Type));  \
-    impl_->bindVar(bufArg.var(), typed_data); \
-    break;                                    \
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define TYPE_CASE(Type, Name)                                      \
+  case ScalarType::Name: {                                         \
+    static_assert(                                                 \
+        sizeof(Type) <= sizeof(void*),                             \
+        "Can't read data bigger than sizeof(void*) from pointer"); \
+    Type typed_data;                                               \
+    memcpy(&typed_data, data, sizeof(Type));                       \
+    impl_->bindVar(bufArg.var(), typed_data);                      \
+    break;                                                         \
   }
-    AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE);
+#else /* __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ */
+#define TYPE_CASE(Type, Name)                                      \
+  case ScalarType::Name: {                                         \
+    static_assert(                                                 \
+        sizeof(Type) <= sizeof(void*),                             \
+        "Can't read data bigger than sizeof(void*) from pointer"); \
+    Type typed_data;                                               \
+    size_t idx = sizeof(void*) - sizeof(Type);                     \
+    memcpy(&typed_data, ((const char*)data) + idx, sizeof(Type));  \
+    impl_->bindVar(bufArg.var(), typed_data);                      \
+    break;                                                         \
+  }
+#endif /* __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ */
+    /* only types not longer than pointer can be stored in pointer */
+    TYPE_CASE(uint8_t, Byte)
+    TYPE_CASE(int8_t, Char)
+    TYPE_CASE(int16_t, Short)
+    TYPE_CASE(int, Int)
 #undef TYPE_CASE
     default:
       throw unsupported_dtype();
