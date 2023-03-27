@@ -372,6 +372,9 @@ class Source:
     def name(self) -> str:
         raise NotImplementedError()
 
+    def module(self) -> Optional[str]:
+        return None
+
     def make_guard(self, fn, is_volatile=False) -> Guard:
         if self.guard_source() is GuardSource.CONSTANT:
             raise NotImplementedError()

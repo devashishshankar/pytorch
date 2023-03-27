@@ -349,6 +349,11 @@ class ODictGetItemSource(Source):
     def guard_source(self):
         return self.base.guard_source()
 
+    def module(self):
+        if isinstance(self.index, type) and self.index.__module__ != "builtins":
+            return self.index.__module__
+        return None
+
     def name(self):
         if isinstance(self.index, type):
             if self.index.__module__ == "builtins":

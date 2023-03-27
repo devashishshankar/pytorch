@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import enum
 import functools
+import importlib
 import inspect
 import operator
 import re
@@ -19,7 +20,7 @@ from torch.fx.immutable_collections import immutable_list
 from .. import config, mutation_guard, replay_record, skipfiles
 from ..allowed_functions import is_allowed, is_builtin_callable, is_numpy
 from ..exc import unimplemented
-from ..guards import GuardBuilder
+from ..guards import CLOSURE_VARS, GuardBuilder
 from ..side_effects import SideEffects
 from ..source import (
     AttrSource,
@@ -167,6 +168,9 @@ class VariableBuilder:
         self.name = source.name()
 
     def __call__(self, value):
+        source_module = self.source.module()
+        if source_module is not None:
+            CLOSURE_VARS[source_module] = importlib.import_module(source_module)
         if value in self.tx.output.side_effects:
             # TODO(jansel): add guard for alias relationship
             return self.tx.output.side_effects[value]

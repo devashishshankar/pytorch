@@ -60,7 +60,6 @@ CLOSURE_VARS = collections.OrderedDict(
         ("___tuple_iterator_getitem", tuple_iterator_getitem),
         ("__math_isnan", math.isnan),
         ("inf", float("inf")),
-        ("numpy", np),
     ]
 )
 
