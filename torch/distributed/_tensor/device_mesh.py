@@ -48,16 +48,6 @@ MeshExprT = Union[
     NDIntList,
 ]
 
-def _pad_tensor(tensor: torch.Tensor, pad_dim) -> torch.Tensor:
-    # pad tensor by 1 on the shard dim
-    pad = [0, 0] * (tensor.ndim - pad_dim)
-    pad[-1] = 1
-    return torch.nn.functional.pad(tensor, pad)
-
-def _unpad_tensor(tensor: torch.Tensor, pad_dim) -> torch.Tensor:
-    # unpad tensor by 1 on the shard dim
-    return tensor.narrow(pad_dim, start=0, length=tensor.size(pad_dim) - 1)
-
 class DeviceMesh:
     """
     DeviceMesh represents a mesh of devices, where layout of devices could be
