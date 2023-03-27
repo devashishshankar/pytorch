@@ -198,13 +198,13 @@ test_python_shard() {
     exit 1
   fi
 
-  time python test/run_test.py --exclude-jit-executor --exclude-distributed-tests --shard "$1" "$NUM_TEST_SHARDS" --verbose
+  time python test/run_test.py --exclude-jit-executor --exclude-distributed-tests --exclude-inductor-codegen-tests --shard "$1" "$NUM_TEST_SHARDS" --verbose
 
   assert_git_not_dirty
 }
 
 test_python() {
-  time python test/run_test.py --exclude-jit-executor --exclude-distributed-tests --verbose
+  time python test/run_test.py --exclude-jit-executor --exclude-distributed-tests --exclude-inductor-codegen-tests --verbose
   assert_git_not_dirty
 }
 
@@ -220,6 +220,7 @@ test_dynamo_shard() {
   time python test/run_test.py --dynamo \
     --exclude-jit-executor \
     --exclude-distributed-tests \
+    --exclude-inductor-codegen-tests \
     --exclude \
       test_autograd \
       test_proxy_tensor \
@@ -255,6 +256,10 @@ test_inductor() {
   python test/run_test.py --inductor --include test_modules test_ops test_ops_gradients test_torch --verbose
   # Do not add --inductor for the following inductor unit tests, otherwise we will fail because of nested dynamo state
   python test/run_test.py --include inductor/test_torchinductor inductor/test_torchinductor_opinfo --verbose
+}
+
+test_inductor_codegen() {
+  python test/run_test.py --include inductor/test_torchinductor_codegen_dynamic_shapes --verbose
 }
 
 # "Global" flags for inductor benchmarking controlled by TEST_CONFIG
@@ -908,6 +913,8 @@ elif [[ "${TEST_CONFIG}" == *torchbench* ]]; then
     checkout_install_torchbench
     PYTHONPATH=$(pwd)/torchbench test_dynamo_benchmark torchbench "$id"
   fi
+elif [[ "${TEST_CONFIG}" == 'inductor_codegen' ]]; then
+  test_inductor_codegen
 elif [[ "${TEST_CONFIG}" == *inductor* && "${SHARD_NUMBER}" == 1 ]]; then
   install_torchvision
   test_inductor
