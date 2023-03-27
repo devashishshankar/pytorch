@@ -6,7 +6,7 @@ import itertools
 import logging
 import math
 import operator
-from typing import Dict, List, Set
+from typing import Dict, Iterable, List, Set
 
 import sympy
 
@@ -293,11 +293,13 @@ class TritonOverrides(OpOverrides):
         return f"{a} | {b}"
 
     @staticmethod
-    def rand(seed, offset, _):  # _ here to keep the contract identical to CPU rand op
+    def rand(seed, offset, _):
+        offset = f"({offset}).to(tl.uint32)"
         return f"tl.rand({seed}, {offset})"
 
     @staticmethod
-    def randn(seed, offset, _):  # _ here to keep the contract identical to CPU randn op
+    def randn(seed, offset, _):
+        offset = f"({offset}).to(tl.uint32)"
         return f"tl.randn({seed}, {offset})"
 
     @staticmethod
@@ -523,7 +525,8 @@ class IterationRangesRoot(IterationRanges):
 
     def ranges_code(self):
         size = self.kernel.indexing_size_str(self.index, self.prefix)
-        return f"tl.arange(0, {self.prefix.upper()}BLOCK){size}"
+        index_dtype = self.kernel.index_dtype
+        return f"tl.arange(0, {self.prefix.upper()}BLOCK){size}.to({index_dtype})"
 
     def pid_cache_lookup(self, key):
         if key in self.pid_cache:
@@ -541,9 +544,10 @@ class IterationRangesRoot(IterationRanges):
             )
         else:
             pid = self.pid_cache_lookup(f"tl.program_id({self.index})")
+            index_dtype = self.kernel.index_dtype
             code.writelines(
                 [
-                    f"{x}offset = {pid} * {x.upper()}BLOCK",
+                    f"{x}offset = {pid}.to({index_dtype}) * {x.upper()}BLOCK",
                     f"{self.name} = {x}offset + {self.ranges_code()}",
                 ]
             )
@@ -622,6 +626,7 @@ class TritonKernel(Kernel):
     def __init__(
         self,
         *groups,
+        index_dtype,
         mutations=None,
         pid_cache=None,
         reduction_hint=ReductionHint.DEFAULT,
@@ -641,6 +646,8 @@ class TritonKernel(Kernel):
         self.suffix = IndentedBuffer()
         self.outside_loop_vars = set()
         self.reduction_hint = reduction_hint
+        self.index_dtype = index_dtype
+
         self.persistent_reduction = self.should_use_persistent_reduction()
         self.initialize_range_tree(pid_cache)
 
@@ -915,10 +922,10 @@ class TritonKernel(Kernel):
 
         if (need_dense and not have_dense) or isinstance(index, sympy.Integer):
             if copy_shape:
-                index_str = f"{index_str} + tl.zeros({copy_shape}.shape, tl.int32)"
+                index_str = f"{index_str} + tl.zeros({copy_shape}.shape, {self.index_dtype})"
                 expand_str = f"{copy_shape}.shape"
             else:
-                index_str = f"{index_str} + tl.zeros({self.dense_size_str()}, tl.int32)"
+                index_str = f"{index_str} + tl.zeros({self.dense_size_str()}, {self.index_dtype})"
                 expand_str = self.dense_size_str()
             if isinstance(index, sympy.Integer):
                 return index_str, set(), "None", expand_str
@@ -926,7 +933,9 @@ class TritonKernel(Kernel):
                 mask_vars = dense_mask_vars
         elif not have_loop_vars and copy_shape:
             mask_vars = dense_mask_vars
-            index_str = f"{index_str} + tl.zeros({copy_shape}.shape, tl.int32)"
+            index_str = (
+                f"{index_str} + tl.zeros({copy_shape}.shape, {self.index_dtype})"
+            )
 
         if override_mask:
             mask_vars = {override_mask}
@@ -1128,11 +1137,12 @@ class TritonKernel(Kernel):
 
             if accumulator_index:
                 # argmax, argmin
+                idx_dtype = self.index_dtype
                 self.suffix.writelines(
                     [
                         f"{accumulator_index}_reduce = "
-                        f"tl.{reduction_type}({accumulator}, {dim})[{', '.join(sizes)}].to(tl.int32)",
-                        f"{accumulator_index}_mask = tl.arange(0, {reduction_range_prefix.upper()}BLOCK)"
+                        f"tl.{reduction_type}({accumulator}, {dim})[{', '.join(sizes)}].to({idx_dtype})",
+                        f"{accumulator_index}_mask = tl.arange(0, {reduction_range_prefix.upper()}BLOCK).to({idx_dtype})"
                         f"[{', '.join(reduction_sizes)}] == {accumulator_index}_reduce",
                         f"{result_var} = tl.sum("
                         f"tl.where({accumulator_index}_mask, {accumulator_index}, 0), {dim})[{', '.join(sizes)}]",
@@ -1626,6 +1636,49 @@ class TritonScheduling:
         else:
             return node.node.data.reduction_hint
 
+    @staticmethod
+    def can_use_32bit_indexing(buffers: Iterable[ir.Buffer]):
+        int_max = 2**31 - 1
+        buf_sizes = [buf.get_layout().storage_size() for buf in buffers]
+        if not all(V.graph.sizevars.size_hint(size) <= int_max for size in buf_sizes):
+            return False
+
+        for size in buf_sizes:
+            V.graph.sizevars.guard_leq(size, int_max)
+        return True
+
+    @staticmethod
+    def select_index_dtype(node_schedule):
+        # Gather all used buffer names
+        buffer_names = set()
+        for node in node_schedule:
+            if not isinstance(node, scheduler.BaseSchedulerNode):
+                continue
+
+            buffer_names.update(node.get_names())
+            buffer_names.update(node.used_buffer_names())
+
+        # Get buffers objects
+        def _get_buffer(name: str) -> ir.Buffer:
+            if name in V.graph.name_to_buffer:
+                return V.graph.name_to_buffer[name]
+            elif name in V.graph.graph_inputs:
+                return V.graph.graph_inputs[name]
+            elif name in V.graph.constants:
+                data = V.graph.constants[name]
+                return ir.ConstantBuffer(
+                    name,
+                    ir.FixedLayout(
+                        data.device, data.dtype, *V.graph.static_sizes_strides(data)
+                    ),
+                )
+            raise RuntimeError(f"Failed to find buffer matching name {name}")
+
+        buffers = [_get_buffer(name) for name in buffer_names]
+        if TritonScheduling.can_use_32bit_indexing(buffers):
+            return "tl.int32"
+        return "tl.int64"
+
     def codegen_node_schedule(self, node_schedule, numel, reduction_numel):
         tiled_groups = self.select_tiling(node_schedule, numel, reduction_numel)
         reductions = list(
@@ -1649,8 +1702,13 @@ class TritonScheduling:
             if hasattr(node, "get_mutations"):
                 mutations.update(node.get_mutations())
 
+        index_dtype = self.select_index_dtype(node_schedule)
+
         with TritonKernel(
-            *tiled_groups, reduction_hint=reduction_hint_val, mutations=mutations
+            *tiled_groups,
+            reduction_hint=reduction_hint_val,
+            mutations=mutations,
+            index_dtype=index_dtype,
         ) as kernel:
             stack = contextlib.ExitStack()
             for node in node_schedule:

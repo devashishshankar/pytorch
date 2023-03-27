@@ -22,7 +22,14 @@ from .autotune_process import BenchmarkRequest, TensorMeta
 from .codecache import code_hash, PersistentCache, PyCodeCache
 
 from .codegen.common import IndentedBuffer
-from .codegen.triton import config_of, signature_of, texpr, TritonKernel, TritonPrinter
+from .codegen.triton import (
+    config_of,
+    signature_of,
+    texpr,
+    TritonKernel,
+    TritonPrinter,
+    TritonScheduling,
+)
 
 from .utils import do_bench, sympy_dot, sympy_product
 from .virtualized import V
@@ -59,8 +66,14 @@ class TritonTemplateKernel(TritonKernel):
         prefix_args=0,
         suffix_args=0,
         epilogue_fn=identity,
+        *,
+        index_dtype,
     ):
-        super().__init__(sympy_product(output_node.get_size()), sympy.Integer(1))
+        super().__init__(
+            sympy_product(output_node.get_size()),
+            sympy.Integer(1),
+            index_dtype=index_dtype,
+        )
         self.input_nodes = input_nodes
         self.output_node = output_node
         self.named_input_nodes = {}
@@ -356,6 +369,13 @@ class TritonTemplate:
         fake_out = ir.Buffer("buf_out", layout)
         kernel_name = f"triton_{self.name}"
 
+        buffers = itertools.chain(input_nodes, (fake_out,))
+        index_dtype = (
+            "tl.int32"
+            if TritonScheduling.can_use_32bit_indexing(buffers)
+            else "tl.int64"
+        )
+
         kernel_options = dict(
             input_nodes=input_nodes,
             defines=defines,
@@ -367,6 +387,7 @@ class TritonTemplate:
             prefix_args=prefix_args,
             suffix_args=suffix_args,
             epilogue_fn=epilogue_fn,
+            index_dtype=index_dtype,
         )
         with patch.object(
             V.graph, "get_dtype", self.fake_get_dtype(fake_out)
