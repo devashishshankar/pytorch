@@ -19,6 +19,7 @@ from torch._prims_common import (
     is_integer_dtype,
 )
 from torch._subclasses.meta_utils import MetaConverter
+from torch.fx.experimental.symbolic_shapes import DimConstraint, DimDynamic
 from torch.fx.operator_schemas import normalize_function
 from torch.multiprocessing.reductions import StorageWeakRef
 from torch.overrides import TorchFunctionMode
@@ -28,6 +29,8 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import PyTree, tree_flatten, tree_map, tree_map_only
 from torch.utils._stats import count, count_label
 from torch.utils.weak import WeakIdRef
+
+DimList = List
 
 log = logging.getLogger(__name__)
 
@@ -242,6 +245,8 @@ class FakeTensorConverter:
         ignore_subclass=False,
         *,
         source=None,
+        dynamic_dims: Optional[DimList[DimDynamic]] = None,
+        constraint_dims: Optional[DimList[DimConstraint]] = None,
     ):
         maybe_memo = self._get_memo(t)
         if maybe_memo is not None:
@@ -275,6 +280,8 @@ class FakeTensorConverter:
             callback=mk_fake_tensor,
             ignore_subclass=ignore_subclass,
             source=source,
+            dynamic_dims=dynamic_dims,
+            constraint_dims=constraint_dims,
         )
         if out is NotImplemented:
             raise UnsupportedFakeTensorException("meta converter nyi")
@@ -310,6 +317,8 @@ class FakeTensorConverter:
         shape_env=None,
         ignore_subclass=False,
         source=None,
+        dynamic_dims=None,
+        constraint_dims=None,
     ):
         return self.from_real_tensor(
             fake_mode,
@@ -318,6 +327,8 @@ class FakeTensorConverter:
             shape_env=shape_env,
             ignore_subclass=ignore_subclass,
             source=source,
+            dynamic_dims=dynamic_dims,
+            constraint_dims=constraint_dims,
         )
 
 
@@ -1387,20 +1398,27 @@ class FakeTensorMode(TorchDispatchMode):
     def from_tensor(
         self,
         tensor,
+        *,
         static_shapes=False,
         ignore_subclass=False,
         source: Optional[Source] = None,
+        dynamic_dims: Optional[DimList[DimDynamic]] = None,
+        constraint_dims: Optional[DimList[DimConstraint]] = None,
     ):
+        shape_env = self.shape_env
         if static_shapes:
-            return self.fake_tensor_converter(
-                self, tensor, ignore_subclass=ignore_subclass, source=source
-            )
+            assert (
+                dynamic_dims is None
+            ), "cannot set both static_shapes and dynamic_dims"
+            shape_env = None
         return self.fake_tensor_converter(
             self,
             tensor,
-            shape_env=self.shape_env,
+            shape_env=shape_env,
             ignore_subclass=ignore_subclass,
             source=source,
+            dynamic_dims=dynamic_dims,
+            constraint_dims=constraint_dims,
         )
 
 
