@@ -15,21 +15,24 @@ class Net(torch.nn.Module):
 */
 struct Net : torch::nn::Module {
   Net() {
-    weight = register_parameter("weight", torch::ones({32, 64}));
+    weight = register_parameter("weight", torch::ones({32, 64}, at::TensorOptions(at::kCUDA).dtype(at::ScalarType::Float)));
   }
   torch::Tensor forward(torch::Tensor input) {
-    return torch::relu(input + weight);
+    //return torch::relu(input + weight);
+    return input + weight;
   }
   torch::Tensor weight;
 };
 
 int main() {
-    torch::Tensor x = at::randn({32, 64});
+    torch::Tensor x = at::randn({32, 64}, at::device(at::kCUDA).dtype(at::kFloat));
+    //torch::Tensor x = at::randn({32, 64}, at::dtype(at::kFloat).device(at::kCUDA));
     Net net;
     torch::Tensor results_ref = net.forward(x);
 
     // TODO: we need to provide an API to concatenate args and weights
     std::vector<torch::Tensor> inputs = {x};
+
     for (const auto& pair : net.named_parameters()) {
       inputs.push_back(pair.value());
     }
