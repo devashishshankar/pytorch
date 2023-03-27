@@ -5717,6 +5717,8 @@ class CommonTemplate:
             ["test_bmm1", True],
             ["test_bmm2", True],
             ["test_cat", True],  # alias
+            ["test_conv2d_binary", True],
+            ["test_conv2d_unary", True],
             ["test_linear1", True],
             ["test_linear2", True],
             ["test_linear_packed", True],
