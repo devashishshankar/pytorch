@@ -3519,7 +3519,12 @@ class ConvolutionTransposeUnary(ExternKernelAlloc):
     ):
         kernel = "torch.ops.mkldnn._convolution_transpose_pointwise"
         transposed = True
-        (inputs, constant_args, kernel_layout, _,) = _prepare_convolution_fusion_create(
+        (
+            inputs,
+            constant_args,
+            kernel_layout,
+            _,
+        ) = _prepare_convolution_fusion_create(
             cls,
             x,
             weight,
@@ -3968,15 +3973,18 @@ class CollectiveKernel(ExternKernel):
 
         wrapper.writeline(f"_register_tensor_work({output_name}, {output_name}_work)")
 
+
 class MultiOutputNoSizeAssert(MultiOutput):
     """
     Extract partial output from a multi-output OP.
         Works like MultiOutput but doesn't assert size. This must be a property guaranteed by the op emiting this.
     """
+
     def codegen(self, wrapper):
         wrapper.writeline(
             f"{self.get_name()} = {self.inputs[0].get_name()}{self.index}"
         )
+
 
 class ForceInPlace(ExternKernel):
     """
@@ -3985,6 +3993,7 @@ class ForceInPlace(ExternKernel):
 
     TODO: We should test whether wait_tensor can be a victim of reordering and lead to data races.
     """
+
     def codegen(self, wrapper):
         input_name = self.inputs[0].codegen_reference()
         output_name = self.get_name()
@@ -4019,6 +4028,7 @@ class AllReduceCoalesced(ExternKernel):
         group_size: int,
     ):
         res = []
+
         def wrap_input(var):
             nonlocal res
             op = ForceInPlace(
