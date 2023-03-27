@@ -5719,6 +5719,7 @@ class CommonTemplate:
             ["test_cat", True],  # alias
             ["test_linear1", True],
             ["test_linear2", True],
+            ["test_linear_packed", True],
             ["test_lowmem_dropout1", True],  # None as output
             ["test_mm_views", True],
             [
