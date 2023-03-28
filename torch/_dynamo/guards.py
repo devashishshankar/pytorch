@@ -35,7 +35,6 @@ from .utils import (
     istype,
     np,
     orig_code_map,
-    rename_implicit,
     tensor_always_has_static_shape,
     tensor_static_reason_to_message,
     tuple_iterator_getitem,
@@ -87,17 +86,16 @@ class GuardBuilder(GuardBuilderBase):
         self,
         id_ref: Callable[[Type[object]], str],
         source_ref: Callable[[Source], str],
-        scope: Optional[Dict[str, object]],
+        user_scope: Optional[Dict[str, object]],
+        local: bool,
         check_fn_manager: "CheckFunctionManager",
-        renames=True,
     ):
         self.id_ref = id_ref
         self.source_ref = source_ref
-        if scope:
-            if renames:
-                scope = {rename_implicit(k): v for k, v in scope.items()}
+        if user_scope:
+            scope = {"L" if local else "G": user_scope}
         else:
-            scope = dict()
+            scope = {"L" if local else "G": dict()}
         self.scope: Dict[str, object] = scope
         self.scope["__builtins__"] = builtins.__dict__.copy()
         for (
@@ -623,12 +621,10 @@ class CheckFunctionManager:
             self.id_ref,
             source_ref,
             combine_scopes(f_globals, f_locals),
+            True,
             self,
-            renames=True,
         )
-        global_builder = GuardBuilder(
-            self.id_ref, source_ref, f_globals, self, renames=False
-        )
+        global_builder = GuardBuilder(self.id_ref, source_ref, f_globals, False, self)
         # source_ref can cause a cycle, make sure we break it with weakref
         w_local = weakref.ref(local_builder)
         w_global = weakref.ref(global_builder)
@@ -652,7 +648,7 @@ class CheckFunctionManager:
     def compile_check_fn(
         self, local_builder, global_builder, guards_out, guard_fail_fn
     ):
-        assert not (set(local_builder.argnames) & set(global_builder.argnames))
+        intersection = set(local_builder.argnames) & set(global_builder.argnames)
         # see parallel handling of ".0" / "___implicit0" in _eval_frame.c
         largs = [a for a in local_builder.scope.keys() if a == "___implicit0"]
         largs += [a for a in local_builder.argnames if a != "___implicit0"]
@@ -721,12 +717,18 @@ class CheckFunctionManager:
         verbose_code_parts.extend(local_builder.shape_env_code)
         assert not global_builder.shape_env_code
 
+        # TODO(voz): Make this a real util
+        def _print_true(*args):
+            print("PRINTING TRUE", args)
+            return True
+
         code = " and ".join(unique(code_parts))
         closure_vars = collections.OrderedDict(
             [
                 ("___guarded_code", self),
                 ("___check_tensors", check_tensors_fn),
                 ("___check_tensors_verbose", check_tensors_verbose_fn),
+                ("__print_true", _print_true),
                 ("tensor_check_names", tensor_check_names),
             ]
             + list(SYMPY_INTERP.items())
@@ -734,13 +736,12 @@ class CheckFunctionManager:
         closure_vars.update(CLOSURE_VARS)
         py_code = f"""\
 def ___make_guard_fn({','.join(closure_vars.keys())}):
-    return lambda {args}: {code}
+    return lambda L, G: {code}
 """
         if os.environ.get("TORCHDYNAMO_PRINT_GUARDS", None) == "1":
             print("GUARDS", code)
         set_guard_fail_hook(guard_fail_hook)
         out: Dict[str, Any] = dict()
-        # print("RUNNING PY CODE", py_code)
         exec(py_code, global_builder.scope, out)
         guard_fn = out["___make_guard_fn"](*closure_vars.values())
         guard_fn.closure_vars = closure_vars
@@ -768,14 +769,18 @@ def ___make_guard_fn({','.join(closure_vars.keys())}):
 
 
 def guard_fail_hook(
-    guard_fn: GuardFn, code: types.CodeType, f_locals: Dict[str, object], last: bool
+    guard_fn: GuardFn,
+    code: types.CodeType,
+    f_locals: Dict[str, object],
+    f_globals: Dict[str, object],
+    last: bool,
 ) -> None:
     """
     called whenever a guard fails.
     """
     if not guard_fn.guard_fail_fn and not last:
         return
-    scope = {rename_implicit(k): v for k, v in f_locals.items()}
+    scope = {"L": f_locals}
     scope.update(guard_fn.closure_vars)
     reason = None
     for part in guard_fn.verbose_code_parts:
@@ -804,7 +809,11 @@ def guard_fail_hook(
 
 
 def guard_error_hook(
-    guard_fn: GuardFn, code: types.CodeType, f_locals: Dict[str, object], last: bool
+    guard_fn: GuardFn,
+    code: types.CodeType,
+    f_locals: Dict[str, object],
+    f_globals: Dict[str, object],
+    last: bool,
 ):
     print(
         f"ERROR RUNNING GUARDS {code.co_name} {code.co_filename}:{code.co_firstlineno}"

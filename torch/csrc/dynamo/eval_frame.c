@@ -300,8 +300,6 @@ THPPyInterpreterFrame* THPPyInterpreterFrame_New(_PyInterpreterFrame* frame) {
 // Flag to just run a frame normally
 #define SKIP_CODE ((void*)0x1)
 
-static PyObject* noargs = NULL; /* cached empty tuple */
-static PyObject* dotzerokey = NULL; /* ".0" */
 static PyObject* guard_fail_hook = NULL;
 static PyObject* guard_error_hook = NULL;
 static PyObject* profiler_start_hook = NULL;
@@ -465,13 +463,15 @@ inline static const char* name(THP_EVAL_API_FRAME_OBJECT* frame) {
 static PyObject* call_guard_fail_hook(
     PyObject* hook,
     CacheEntry* e,
-    PyObject* f_locals) {
+    PyObject* f_locals,
+    PyObject* f_globals) {
   // call debugging logic when a guard fails
   PyObject* args = PyTuple_Pack(
-      4,
+      5,
       e->check_fn,
       e->code,
       f_locals,
+      f_globals,
       (e->next == NULL ? Py_True : Py_False));
   if (args == NULL) return NULL;
   PyObject* result = PyObject_CallObject(hook, args);
@@ -508,22 +508,24 @@ static PyObject* lookup(CacheEntry* e, THP_EVAL_API_FRAME_OBJECT *frame, CacheEn
     return Py_None;
   }
   PyObject *f_locals = frame->f_locals;
-  PyObject* dotzero = PyDict_GetItem(f_locals, dotzerokey);
-  PyObject* valid = NULL;
-  if (unlikely(dotzero != NULL)) {
-    // .0 is a special variable name used for implicit args
-    PyObject* args = PyTuple_Pack(1, dotzero);
-    if (args == NULL) return NULL;
-    valid = PyObject_Call(e->check_fn, args, f_locals);
-    Py_DECREF(args);
-  } else {
-    valid = PyObject_Call(e->check_fn, noargs, f_locals);
+  if (f_locals == NULL) {
+      f_locals = frame->f_locals = PyDict_New();
   }
+  PyObject *f_globals = frame->f_globals;
+  if (f_globals == NULL) {
+      f_globals = frame->f_globals = PyDict_New();
+  }
+  // TODO: In Python 3.9 can optimize this to PyObject_CallOneArg
+  PyObject* args_tuple = PyTuple_Pack(2, f_locals, f_globals);
+  if (args_tuple == NULL) {
+    return NULL;
+  }
+  PyObject* valid = PyObject_Call(e->check_fn, args_tuple, NULL);
   if (unlikely(valid == NULL)) {
     if (guard_error_hook != NULL) {
       PyObject *type, *value, *traceback;
       PyErr_Fetch(&type, &value, &traceback);
-      PyObject* r = call_guard_fail_hook(guard_error_hook, e, f_locals);
+      PyObject* r = call_guard_fail_hook(guard_error_hook, e, f_locals, f_globals);
       if (r == NULL) {
         return NULL;
       }
@@ -532,6 +534,7 @@ static PyObject* lookup(CacheEntry* e, THP_EVAL_API_FRAME_OBJECT *frame, CacheEn
     }
     return NULL;
   }
+  Py_DECREF(args_tuple);
   Py_DECREF(valid);
   if (valid == Py_True) {
     // Keep the head as the most recently used cache entry.
@@ -546,7 +549,7 @@ static PyObject* lookup(CacheEntry* e, THP_EVAL_API_FRAME_OBJECT *frame, CacheEn
     return (PyObject*)e->code;
   }
   if (unlikely(guard_fail_hook != NULL)) {
-    PyObject* r = call_guard_fail_hook(guard_fail_hook, e, f_locals);
+    PyObject* r = call_guard_fail_hook(guard_fail_hook, e, f_locals, f_globals);
     if (r == NULL) {
       return NULL;
     }
@@ -959,8 +962,6 @@ PyObject* torch_c_dynamo_eval_frame_init(void) {
   Py_INCREF(Py_None);
   eval_frame_callback_set(Py_None);
 
-  noargs = PyTuple_New(0);
-  dotzerokey = PyUnicode_InternFromString(".0");
   PyObject* module = PyModule_Create(&_module);
 
 #if IS_PYTHON_3_11_PLUS
