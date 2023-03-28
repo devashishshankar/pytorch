@@ -40,6 +40,10 @@ supported_const_comparison_ops = {
 }
 
 
+def has_same_metadata(t1, t2):
+    return t1.size == t2.size and t1.stride == t2.stride
+
+
 class TensorVariable(VariableTracker):
     """A torch.Tensor input or an intermediate value in the FX graph"""
 
@@ -393,7 +397,7 @@ class TensorVariable(VariableTracker):
                         self.ndim = args[0].ndim
                         self.is_contiguous = (memory_format,)
 
-            return wrap_fx_proxy(
+            out = wrap_fx_proxy(
                 tx,
                 tx.output.create_proxy(
                     "call_method",
@@ -402,6 +406,8 @@ class TensorVariable(VariableTracker):
                 ),
                 **options,
             )
+            tx.metadata_mutated_variables[self] = out
+            return out
         elif (
             name == "add_" and len(args) == 1 and len(kwargs) == 1 and "alpha" in kwargs
         ):
@@ -430,7 +436,7 @@ class TensorVariable(VariableTracker):
                 and not config.dynamic_shapes
             ):
                 name = "new_empty"
-            return wrap_fx_proxy(
+            out = wrap_fx_proxy(
                 tx,
                 tx.output.create_proxy(
                     "call_method",
@@ -439,6 +445,9 @@ class TensorVariable(VariableTracker):
                 ),
                 **options,
             )
+            if name[-1] == "_" and not has_same_metadata(out, self):
+                tx.metadata_mutated_variables[self] = out
+            return out
 
 
 class SymNodeVariable(VariableTracker):
